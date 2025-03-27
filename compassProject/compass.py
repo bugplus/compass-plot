@@ -40,7 +40,7 @@ def smooth_and_interpolate(data, num_points=1000):
 
     return np.column_stack((x_new, y_new, z_new))
 
-# 绘制三维圆
+# 绘制三维圆并显示圆心和坐标系原点
 def plot_3d_circle(data):
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
@@ -51,7 +51,18 @@ def plot_3d_circle(data):
     z = data[:, 2]
 
     # 绘制线图
-    ax.plot(x, y, z, c='r', marker='o')
+    ax.plot(x, y, z, c='r', marker='o', label='Magnetic Field Line')
+
+    # 计算数据点的圆心（均值）
+    center_x = np.mean(x)
+    center_y = np.mean(y)
+    center_z = np.mean(z)
+
+    # 在数据点的圆心位置绘制一个点
+    ax.scatter(center_x, center_y, center_z, color='blue', s=100, label='Data Center')
+
+    # 在三维坐标系的原点位置绘制一个点
+    ax.scatter(0, 0, 0, color='green', s=100, label='Coordinate Origin')
 
     # 设置坐标轴标签
     ax.set_xlabel('X')
@@ -61,13 +72,21 @@ def plot_3d_circle(data):
     # 设置标题
     ax.set_title('3D Circle from Magnetometer Data')
 
-    # 设置坐标轴范围
-    ax.set_xlim([min(x)-100, max(x)+100])
-    ax.set_ylim([min(y)-100, max(y)+100])
-    ax.set_zlim([min(z)-100, max(z)+100])
+    # 调整坐标轴范围以确保原点可见
+    max_range = max(max(x) - min(x), max(y) - min(y), max(z) - min(z)) / 2
+    mid_x = (max(x) + min(x)) / 2
+    mid_y = (max(y) + min(y)) / 2
+    mid_z = (max(z) + min(z)) / 2
+
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_y - max_range, mid_y + max_range)
+    ax.set_zlim(mid_z - max_range, mid_z + max_range)
 
     # 设置视角
     ax.view_init(elev=20, azim=-45)
+
+    # 添加图例
+    ax.legend()
 
     # 显示图形
     plt.show()
