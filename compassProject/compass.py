@@ -1,102 +1,124 @@
+import serial
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.animation import FuncAnimation
+import re
 import numpy as np
-from scipy.interpolate import make_interp_spline
+import time
 
-# 读取文件中的数据
-def read_data(file_path):
-    data = []
-    with open(file_path, 'r') as file:
-        for line in file:
-            if 'magx,y,z' in line:
-                # 提取磁力计数据
-                parts = line.split(':')
-                if len(parts) > 2:
-                    mag_data = parts[-1].strip().split(',')
-                    if len(mag_data) == 3:
-                        try:
-                            x, y, z = map(int, mag_data)
-                            data.append((x, y, z))
-                        except ValueError:
-                            continue
-    return data
+# ===================== 配置区域 =====================
+PORT = 'COM4'               # 修改为你实际使用的串口号
+BAUD_RATE = 115200          # 波特率（需与设备一致）
+TIMEOUT = 1                 # 串口超时时间
+X_RANGE = (-300, 300)       # X 轴范围
+Y_RANGE = (-300, 300)       # Y 轴范围
+UPDATE_INTERVAL = 50        # 更新间隔（毫秒）
+# ===================================================
 
-# 对数据进行平滑处理和插值
-def smooth_and_interpolate(data, num_points=1000):
-    x = np.array([point[0] for point in data])
-    y = np.array([point[1] for point in data])
-    z = np.array([point[2] for point in data])
+# 正则表达式匹配 mag_x 和 mag_y
+pattern = re.compile(r'mag_x=(?P<x>-?\d+).*?mag_y=(?P<y>-?\d+)')
 
-    # 创建插值函数
-    tck_x = make_interp_spline(np.arange(len(x)), x, k=3)
-    tck_y = make_interp_spline(np.arange(len(y)), y, k=3)
-    tck_z = make_interp_spline(np.arange(len(z)), z, k=3)
+# 初始化数据容器
+raw_data = []
 
-    # 生成新的数据点
-    t_new = np.linspace(0, len(x) - 1, num_points)
-    x_new = tck_x(t_new)
-    y_new = tck_y(t_new)
-    z_new = tck_z(t_new)
+# 创建两个画布
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-    return np.column_stack((x_new, y_new, z_new))
+# 第一张图：原始数据
+line1, = ax1.plot([], [], 'r.', markersize=3)
+ax1.set_title("Raw Magnetometer X-Y Data\n(Collecting for Calibration)")
+ax1.set_xlabel("mag_x")
+ax1.set_ylabel("mag_y")
+ax1.axhline(0, color='black', lw=0.5)
+ax1.axvline(0, color='black', lw=0.5)
+ax1.grid(True)
+ax1.axis('equal')
+ax1.set_xlim(*X_RANGE)
+ax1.set_ylim(*Y_RANGE)
 
-# 绘制三维圆并显示圆心和坐标系原点
-def plot_3d_circle(data):
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
+# 第二张图：校准后数据
+line2, = ax2.plot([], [], 'b.', markersize=3)
+ax2.set_title("Calibrated Magnetometer X-Y Data\n(Center at origin)")
+ax2.set_xlabel("mag_x (calibrated)")
+ax2.set_ylabel("mag_y (calibrated)")
+ax2.axhline(0, color='black', lw=0.5)
+ax2.axvline(0, color='black', lw=0.5)
+ax2.grid(True)
+ax2.axis('equal')
+ax2.set_xlim(*X_RANGE)
+ax2.set_ylim(*Y_RANGE)
 
-    # 提取x, y, z坐标
-    x = data[:, 0]
-    y = data[:, 1]
-    z = data[:, 2]
+# 打开串口
+try:
+    ser = serial.Serial(PORT, BAUD_RATE, timeout=TIMEOUT)
+    print(f"[INFO] 已连接到串口 {PORT}")
+except Exception as e:
+    print(f"[ERROR] 无法打开串口 {PORT}，错误：{e}")
+    exit()
 
-    # 绘制线图
-    ax.plot(x, y, z, c='r', marker='o', label='Magnetic Field Line')
+# 计算缩放因子（强制 offset 为 0）
+def compute_calibration_params(xs, ys):
+    xs_centered = np.array(xs)  # 不再减去均值
+    ys_centered = np.array(ys)
 
-    # 计算数据点的圆心（均值）
-    center_x = np.mean(x)
-    center_y = np.mean(y)
-    center_z = np.mean(z)
+    x_range = np.ptp(xs_centered)
+    y_range = np.ptp(ys_centered)
 
-    # 在数据点的圆心位置绘制一个点
-    ax.scatter(center_x, center_y, center_z, color='blue', s=100, label='Data Center')
+    scale_x = y_range / x_range if x_range != 0 else 1.0
+    return 0.0, 0.0, scale_x, 1.0  # 强制 offset 为 0
 
-    # 在三维坐标系的原点位置绘制一个点
-    ax.scatter(0, 0, 0, color='green', s=100, label='Coordinate Origin')
+# 全局变量
+start_time = None
+calibration_done = False
 
-    # 设置坐标轴标签
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
+# 更新函数
+def update(frame):
+    global raw_data, start_time, calibration_done
 
-    # 设置标题
-    ax.set_title('3D Circle from Magnetometer Data')
+    current_time = time.time()
 
-    # 调整坐标轴范围以确保原点可见
-    max_range = max(max(x) - min(x), max(y) - min(y), max(z) - min(z)) / 2
-    mid_x = (max(x) + min(x)) / 2
-    mid_y = (max(y) + min(y)) / 2
-    mid_z = (max(z) + min(z)) / 2
+    # 初始化开始时间
+    if start_time is None:
+        start_time = current_time
 
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    # 前30秒：采集数据并绘制原始图
+    if current_time - start_time <= 30:
+        while ser.in_waiting:
+            line_str = ser.readline().decode('utf-8', errors='ignore').strip()
+            match = pattern.search(line_str)
+            if match:
+                x = int(match.group('x'))
+                y = int(match.group('y'))
+                raw_data.append([x, y])
+                if len(raw_data) > 1000:
+                    raw_data.pop(0)
+                print(f"[DATA] mag_x={x}, mag_y={y}")
 
-    # 设置视角
-    ax.view_init(elev=20, azim=-45)
+        if len(raw_data) >= 2:
+            xs, ys = zip(*raw_data)
+            line1.set_data(xs, ys)
+    elif not calibration_done:
+        # 30秒后：计算缩放因子，生成校准图
+        if len(raw_data) >= 2:
+            xs, ys = zip(*raw_data)
+            _, _, scale_x, _ = compute_calibration_params(xs, ys)
 
-    # 添加图例
-    ax.legend()
+            # 应用缩放（不进行 offset 校正）
+            calibrated_xs = np.array(xs) * scale_x
+            calibrated_ys = np.array(ys)
 
-    # 显示图形
-    plt.show()
+            line2.set_data(calibrated_xs, calibrated_ys)
+            ax2.set_title(f"Calibrated Data\n(Scale: x={scale_x:.3f})")
 
-# 主函数
-if __name__ == "__main__":
-    file_path = 'test.txt'  # 替换为你的文件路径
-    data = read_data(file_path)
-    if data:
-        smoothed_data = smooth_and_interpolate(data)
-        plot_3d_circle(smoothed_data)
-    else:
-        print("No valid data found in the file.")
+        calibration_done = True
+        print("[INFO] 校准完成，已切换至校准图")
+
+    return line1, line2
+
+# 启动动画
+ani = FuncAnimation(fig, update, frames=None, interval=UPDATE_INTERVAL, blit=False, cache_frame_data=False, save_count=600)
+plt.tight_layout()
+plt.show()
+
+# 关闭串口
+ser.close()
+print("[INFO] 串口已关闭")
