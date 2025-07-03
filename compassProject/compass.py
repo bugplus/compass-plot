@@ -52,7 +52,7 @@ ax2.axis('equal')
 
 # 图3：最终校准图（去中心化 + 缩放）
 line3, = ax3.plot([], [], 'b.', markersize=3)
-ax3.set_title("Fully Calibrated\n(Offset: (0.0, 0.0), Scale: x=1.000)")  # 初始标题，后续更新
+ax3.set_title("Fully Calibrated\n(Offset: (0.0, 0.0), Scale: x=1.000, y=1.000)")  # 初始标题，后续更新
 ax3.set_xlabel("mag_x (calibrated)")
 ax3.set_ylabel("mag_y (calibrated)")
 ax3.axhline(0, color='black', lw=0.5)
@@ -89,17 +89,15 @@ def update(_):  # 使用 '_' 来忽略 frame 参数
         while ser.in_waiting:
             line_str = ser.readline().decode('utf-8', errors='replace').strip()
             try:
-                # 只解析 mag_x 和 mag_y 的值
                 data = line_str.split(',')
                 if len(data) >= 2:
                     x = int(data[0].split('=')[1])
                     y = int(data[1].split('=')[1])
-                    print(f"接收到数据：mag_x={x}, mag_y={y}")  # 打印接收到的数据
                     raw_data.append((x, y))
                     if len(raw_data) > MAX_POINTS:
                         raw_data.pop(0)
-            except (ValueError, IndexError):
-                print(f"[WARN] 非法数据行：{line_str}")  # 打印非法数据行
+            except Exception:
+                pass  # 忽略非法数据行
 
         if len(raw_data) >= 2:
             xs = np.array([x[0] for x in raw_data])
@@ -135,16 +133,19 @@ def update(_):  # 使用 '_' 来忽略 frame 参数
             # 更新图二的标题，显示 scale_x 和 scale_y 的值
             ax2.set_title(f"After Scaling Only\n(Scale: x={scale_x:.3f}, y={scale_y:.3f})")
 
+            # 计算圆心坐标
             center_x = (max(scaled_xs) + min(scaled_xs)) / 2
             center_y = (max(scaled_ys) + min(scaled_ys)) / 2
 
+            # 进行偏移修正
             calibrated_xs = scaled_xs - center_x
             calibrated_ys = scaled_ys - center_y
 
+            # 确保 line3 的数据正确更新
             line3.set_data(calibrated_xs, calibrated_ys)
             margin = 50
-            ax3.set_xlim(-margin, margin)
-            ax3.set_ylim(-margin, margin)
+            ax3.set_xlim(min(calibrated_xs) - 10, max(calibrated_xs) + 10)
+            ax3.set_ylim(min(calibrated_ys) - 10, max(calibrated_ys) + 10)
 
             # 更新图三的标题，显示 offset 和 scale 的值
             ax3.set_title(f"Fully Calibrated\n(Offset: ({center_x:.1f}, {center_y:.1f}), Scale: x={scale_x:.3f}, y={scale_y:.3f})")
