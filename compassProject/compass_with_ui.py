@@ -7,11 +7,13 @@ compass_with_ui.py
 - 添加 PyQt UI 控制面板：
   - 显示串口号和波特率
   - 提供 开始/停止 按钮
+- 支持 stop 后或 50s 自动结束，绘出图二图三
+- 支持 Start 再次启动采集绘图
 """
 
 import sys
 import serial
-from serial.tools import list_ports  # 显式导入 list_ports 模块
+from serial.tools import list_ports
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,6 +28,7 @@ BAUD_RATE = 115200          # 波特率
 TIMEOUT = 1                 # 串口超时时间
 UPDATE_INTERVAL = 50        # 更新间隔（毫秒）
 MAX_POINTS = 600            # 最大数据点数
+CALIBRATION_DURATION = 50   # 采集持续时间（秒）
 # ===================================================
 
 
@@ -46,7 +49,8 @@ class CompassApp:
         self.connect_serial()
 
         # 初始化绘图
-        self.init_plot()
+        if not hasattr(self, 'fig'):
+            self.init_plot()
 
     def connect_serial(self):
         try:
@@ -100,28 +104,30 @@ class CompassApp:
     def update(self, frame):
         current_time = time.time()
 
-        while self.ser and self.ser.in_waiting:
-            line_str = self.ser.readline().decode('utf-8', errors='replace').strip()
-            try:
-                data = line_str.split(',')
-                if len(data) >= 2:
-                    x = int(data[0].split('=')[1])
-                    y = int(data[1].split('=')[1])
-                    self.raw_data.append((x, y))
-                    if len(self.raw_data) > MAX_POINTS:
-                        self.raw_data.pop(0)
+        if self.ser and self.ser.is_open and self.data_collection_started and not self.calibration_done:
+            while self.ser.in_waiting:
+                line_str = self.ser.readline().decode('utf-8', errors='replace').strip()
+                try:
+                    data = line_str.split(',')
+                    if len(data) >= 2:
+                        x = int(data[0].split('=')[1])
+                        y = int(data[1].split('=')[1])
+                        self.raw_data.append((x, y))
+                        if len(self.raw_data) > MAX_POINTS:
+                            self.raw_data.pop(0)
 
-                    if self.data_collection_started and (current_time - self.start_time <= 30):
-                        print(f"Received Data: mag_x={x}, mag_y={y}")
+                        if self.data_collection_started and (current_time - self.start_time <= CALIBRATION_DURATION):
+                            print(f"Received Data: mag_x={x}, mag_y={y}")
 
-                    if not self.data_collection_started:
-                        self.start_time = current_time
-                        self.data_collection_started = True
+                        if not self.data_collection_started:
+                            self.start_time = current_time
+                            self.data_collection_started = True
 
-            except Exception as e:
-                print(f"[ERROR] 数据解析失败: {e}")
-                continue
+                except Exception as e:
+                    print(f"[ERROR] 数据解析失败: {e}")
+                    continue
 
+        # 更新原始数据图（前30秒持续更新）
         if len(self.raw_data) >= 2 and not self.calibration_done:
             xs = np.array([x[0] for x in self.raw_data])
             ys = np.array([y[1] for y in self.raw_data])
@@ -133,7 +139,8 @@ class CompassApp:
             self.ax1.set_xlim(x_min - margin, x_max + margin)
             self.ax1.set_ylim(y_min - margin, y_max + margin)
 
-        if self.data_collection_started and not self.calibration_done and (current_time - self.start_time > 30):
+        # 如果已经开始采集，并且还没校准完成
+        if self.data_collection_started and not self.calibration_done and (current_time - self.start_time > CALIBRATION_DURATION):
             if len(self.raw_data) >= 6:
                 xs = np.array([x[0] for x in self.raw_data])
                 ys = np.array([y[1] for y in self.raw_data])
@@ -196,6 +203,7 @@ class CompassUI(QWidget):
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
+        self.cleanup_timer = None  # 定时器用于延迟清理
 
         self.initUI()
         self.refresh_ports()
@@ -231,7 +239,8 @@ class CompassUI(QWidget):
         self.setLayout(layout)
 
     def refresh_ports(self):
-        ports = list_ports.comports()  # 使用 list_ports.comports()
+        self.port_combo.clear()  # 清空当前的串口号
+        ports = list_ports.comports()
         for port in ports:
             self.port_combo.addItem(port.device)
 
@@ -240,23 +249,56 @@ class CompassUI(QWidget):
         port = self.port_combo.currentText()
         baud_rate = int(self.baud_combo.currentText())
 
-        if hasattr(self, 'app_instance'):
-            self.app_instance.stop_serial()
+        # 如果已有定时器正在运行，则先停止它
+        if self.cleanup_timer and self.cleanup_timer.isActive():
+            self.cleanup_timer.stop()
 
-        app_instance = CompassApp()
-        app_instance.port = port
-        app_instance.baud_rate = baud_rate
-        app_instance.connect_serial()
-        app_instance.init_plot()
+        # 如果已有实例，先清空
+        if hasattr(self, 'app_instance'):
+            del self.app_instance
+
+        # 创建新实例
+        self.app_instance = CompassApp()
+        self.app_instance.port = port
+        self.app_instance.baud_rate = baud_rate
+        self.app_instance.connect_serial()
+
+        # 只在第一次启动时调用 init_plot
+        if not hasattr(self.app_instance, 'fig'):
+            self.app_instance.init_plot()
+
+        self.app_instance.data_collection_started = True
+        self.app_instance.start_time = time.time()
+
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
 
     def stop_plotting(self):
-        global app_instance
         if hasattr(self, 'app_instance'):
-            app_instance.stop_serial()
-        self.start_button.setEnabled(True)
+            self.app_instance.stop_serial()
+            print("[INFO] 串口已暂停")
+
+        # 设置一个定时器，在 50 秒后真正销毁 app_instance
+        self.cleanup_timer = QTimer(self)
+        self.cleanup_timer.setSingleShot(True)
+        self.cleanup_timer.timeout.connect(self.clear_app_instance)
+        self.cleanup_timer.start(CALIBRATION_DURATION * 1000)
+        print(f"[INFO] Timer started, will clear instance in {CALIBRATION_DURATION} seconds.")
+
+        # 立即禁用 Stop，启用 Start（等待定时器完成后再清空）
         self.stop_button.setEnabled(False)
+        self.start_button.setEnabled(True)
+        print("[INFO] Buttons updated: Stop disabled, Start enabled immediately.")
+
+    def clear_app_instance(self):
+        if hasattr(self, 'app_instance'):
+            del self.app_instance
+            print("[INFO] 数据实例已释放")
+
+        # 更新按钮状态
+        self.stop_button.setEnabled(False)
+        self.start_button.setEnabled(True)
+        print("[INFO] Buttons updated: Stop disabled, Start enabled after timer.")
 
 
 if __name__ == "__main__":
