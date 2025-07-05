@@ -1,16 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-compass_with_ui.py
-
-功能：
-- 原始 compass.py 的功能不变
-- 添加 PyQt UI 控制面板：
-  - 显示串口号和波特率
-  - 提供 开始/停止 按钮
-- 支持 stop 后或 50s 自动结束，绘出图二图三
-- 支持 Start 再次启动采集绘图
-"""
-
 import sys
 import serial
 from serial.tools import list_ports
@@ -28,7 +15,8 @@ BAUD_RATE = 115200          # 波特率
 TIMEOUT = 1                 # 串口超时时间
 UPDATE_INTERVAL = 50        # 更新间隔（毫秒）
 MAX_POINTS = 600            # 最大数据点数
-CALIBRATION_DURATION = 50   # 采集持续时间（秒）
+CALIBRATION_DURATION = 30   # 采集持续时间（秒）
+TOLERANCE_THRESHOLD = 1       # 点的容忍阈值，单位：像素
 # ===================================================
 
 
@@ -49,8 +37,7 @@ class CompassApp:
         self.connect_serial()
 
         # 初始化绘图
-        if not hasattr(self, 'fig'):
-            self.init_plot()
+        self.init_plot()
 
     def connect_serial(self):
         try:
@@ -112,16 +99,18 @@ class CompassApp:
                     if len(data) >= 2:
                         x = int(data[0].split('=')[1])
                         y = int(data[1].split('=')[1])
-                        self.raw_data.append((x, y))
-                        if len(self.raw_data) > MAX_POINTS:
-                            self.raw_data.pop(0)
+                        # 检查点是否已存在，如果存在则忽略
+                        if (x, y) not in self.raw_data:
+                            self.raw_data.append((x, y))
+                            if len(self.raw_data) > MAX_POINTS:
+                                self.raw_data.pop(0)
 
-                        if self.data_collection_started and (current_time - self.start_time <= CALIBRATION_DURATION):
-                            print(f"Received Data: mag_x={x}, mag_y={y}")
+                            if self.data_collection_started and (current_time - self.start_time <= CALIBRATION_DURATION):
+                                print(f"Received Data: mag_x={x}, mag_y={y}")
 
-                        if not self.data_collection_started:
-                            self.start_time = current_time
-                            self.data_collection_started = True
+                            if not self.data_collection_started:
+                                self.start_time = current_time
+                                self.data_collection_started = True
 
                 except Exception as e:
                     print(f"[ERROR] 数据解析失败: {e}")
@@ -141,50 +130,57 @@ class CompassApp:
 
         # 如果已经开始采集，并且还没校准完成
         if self.data_collection_started and not self.calibration_done and (current_time - self.start_time > CALIBRATION_DURATION):
-            if len(self.raw_data) >= 6:
-                xs = np.array([x[0] for x in self.raw_data])
-                ys = np.array([y[1] for y in self.raw_data])
-
-                x_min, x_max = min(xs), max(xs)
-                y_min, y_max = min(ys), max(ys)
-                margin = 50
-                self.x_range_final = (x_min - margin, x_max + margin)
-                self.y_range_final = (y_min - margin, y_max + margin)
-
-                x_range = x_max - x_min
-                y_range = y_max - y_min
-
-                if x_range >= y_range:
-                    self.scale_x = 1.0
-                    self.scale_y = x_range / y_range
-                else:
-                    self.scale_x = y_range / x_range
-                    self.scale_y = 1.0
-
-                scaled_xs = xs * self.scale_x
-                scaled_ys = ys * self.scale_y
-
-                self.line2.set_data(scaled_xs, scaled_ys)
-                self.ax2.set_title(f"After Scaling Only\n(Scale: x={self.scale_x:.3f}, y={self.scale_y:.3f})")
-
-                self.center_x = (max(scaled_xs) + min(scaled_xs)) / 2
-                self.center_y = (max(scaled_ys) + min(scaled_ys)) / 2
-
-                calibrated_xs = scaled_xs - self.center_x
-                calibrated_ys = scaled_ys - self.center_y
-
-                self.line3.set_data(calibrated_xs, calibrated_ys)
-                self.ax3.set_title(f"Fully Calibrated\n(Offset: ({self.center_x:.1f}, {self.center_y:.1f}), "
-                                    f"Scale: x={self.scale_x:.3f}, y={self.scale_y:.3f})")
-
-                for ax in [self.ax1, self.ax2, self.ax3]:
-                    ax.set_xlim(self.x_range_final)
-                    ax.set_ylim(self.y_range_final)
-
+            self.calibrate_data()
             self.calibration_done = True
             print("[INFO] 校准完成，已切换至校准图")
 
         return self.line1, self.line2, self.line3
+
+    def calibrate_data(self):
+        if len(self.raw_data) >= 6:
+            xs = np.array([x[0] for x in self.raw_data])
+            ys = np.array([y[1] for y in self.raw_data])
+
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+            margin = 50
+            self.x_range_final = (x_min - margin, x_max + margin)
+            self.y_range_final = (y_min - margin, y_max + margin)
+
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+
+            if x_range >= y_range:
+                self.scale_x = 1.0
+                self.scale_y = x_range / y_range
+            else:
+                self.scale_x = y_range / x_range
+                self.scale_y = 1.0
+
+            scaled_xs = xs * self.scale_x
+            scaled_ys = ys * self.scale_y
+
+            self.center_x = (max(scaled_xs) + min(scaled_xs)) / 2
+            self.center_y = (max(scaled_ys) + min(scaled_ys)) / 2
+
+            calibrated_xs = scaled_xs - self.center_x
+            calibrated_ys = scaled_ys - self.center_y
+
+            self.line2.set_data(scaled_xs, scaled_ys)
+            self.ax2.set_title(f"After Scaling Only\n(Scale: x={self.scale_x:.3f}, y={self.scale_y:.3f})")
+
+            self.line3.set_data(calibrated_xs, calibrated_ys)
+            self.ax3.set_title(f"Fully Calibrated\n(Offset: ({self.center_x:.1f}, {self.center_y:.1f}), "
+                                f"Scale: x={self.scale_x:.3f}, y={self.scale_y:.3f})")
+
+            for ax in [self.ax1, self.ax2, self.ax3]:
+                ax.set_xlim(self.x_range_final)
+                ax.set_ylim(self.y_range_final)
+
+            # 绘制椭圆中心
+            self.ax2.plot(self.center_x, self.center_y, 'ro')
+            self.ax3.plot(self.center_x, self.center_y, 'ro')
+            self.ax1.plot(self.center_x, self.center_y, 'ro')  # 在图一也绘制圆心
 
     def stop_serial(self):
         if self.ser and self.ser.is_open:
@@ -245,7 +241,6 @@ class CompassUI(QWidget):
             self.port_combo.addItem(port.device)
 
     def start_plotting(self):
-        global app_instance
         port = self.port_combo.currentText()
         baud_rate = int(self.baud_combo.currentText())
 
@@ -273,22 +268,26 @@ class CompassUI(QWidget):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
 
+        # 设置一个定时器，在 30 秒后自动停止
+        self.cleanup_timer = QTimer(self)
+        self.cleanup_timer.setSingleShot(True)
+        self.cleanup_timer.timeout.connect(self.stop_plotting)
+        self.cleanup_timer.start(CALIBRATION_DURATION * 1000)
+
     def stop_plotting(self):
         if hasattr(self, 'app_instance'):
             self.app_instance.stop_serial()
+            self.app_instance.calibration_done = True  # 标记为校准完成
+            self.app_instance.calibrate_data()  # 执行校准
             print("[INFO] 串口已暂停")
-
-        # 设置一个定时器，在 50 秒后真正销毁 app_instance
-        self.cleanup_timer = QTimer(self)
-        self.cleanup_timer.setSingleShot(True)
-        self.cleanup_timer.timeout.connect(self.clear_app_instance)
-        self.cleanup_timer.start(CALIBRATION_DURATION * 1000)
-        print(f"[INFO] Timer started, will clear instance in {CALIBRATION_DURATION} seconds.")
 
         # 立即禁用 Stop，启用 Start（等待定时器完成后再清空）
         self.stop_button.setEnabled(False)
         self.start_button.setEnabled(True)
         print("[INFO] Buttons updated: Stop disabled, Start enabled immediately.")
+
+        if self.cleanup_timer and self.cleanup_timer.isActive():
+            self.cleanup_timer.stop()
 
     def clear_app_instance(self):
         if hasattr(self, 'app_instance'):
