@@ -8,17 +8,15 @@ from matplotlib.animation import FuncAnimation
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox
 from PyQt5.QtCore import QTimer
 
-
 # ===================== 配置区域 =====================
 PORT = 'COM4'               # 默认串口号
 BAUD_RATE = 115200          # 波特率
 TIMEOUT = 1                 # 串口超时时间
 UPDATE_INTERVAL = 50        # 更新间隔（毫秒）
 MAX_POINTS = 600            # 最大数据点数
-CALIBRATION_DURATION = 30   # 采集持续时间（秒）
-TOLERANCE_THRESHOLD = 1       # 点的容忍阈值，单位：像素
+CALIBRATION_DURATION = 60   # 采集持续时间（秒）
+TOLERANCE_THRESHOLD = 1     # 点的容忍阈值，单位：像素
 # ===================================================
-
 
 class CompassApp:
     def __init__(self):
@@ -150,7 +148,8 @@ class CompassApp:
             x_range = x_max - x_min
             y_range = y_max - y_min
 
-            if x_range >= y_range:
+            # 计算缩放比例，确保椭圆变正圆
+            if x_range > y_range:
                 self.scale_x = 1.0
                 self.scale_y = x_range / y_range
             else:
@@ -173,21 +172,21 @@ class CompassApp:
             self.ax3.set_title(f"Fully Calibrated\n(Offset: ({self.center_x:.1f}, {self.center_y:.1f}), "
                                 f"Scale: x={self.scale_x:.3f}, y={self.scale_y:.3f})")
 
-            for ax in [self.ax1, self.ax2, self.ax3]:
-                ax.set_xlim(self.x_range_final)
-                ax.set_ylim(self.y_range_final)
+            # 动态设置坐标范围
+            self.ax2.set_xlim(min(scaled_xs) - 50, max(scaled_xs) + 50)
+            self.ax2.set_ylim(min(scaled_ys) - 50, max(scaled_ys) + 50)
+            self.ax3.set_xlim(min(calibrated_xs) - 50, max(calibrated_xs) + 50)
+            self.ax3.set_ylim(min(calibrated_ys) - 50, max(calibrated_ys) + 50)
 
             # 绘制椭圆中心
             self.ax2.plot(self.center_x, self.center_y, 'ro')
             self.ax3.plot(0, 0, 'ro')  # 在图三绘制圆心在原点
             self.ax1.plot(self.center_x, self.center_y, 'ro')  # 在图一也绘制圆心
 
-
     def stop_serial(self):
         if self.ser and self.ser.is_open:
             self.ser.close()
             print("[INFO] 串口已关闭")
-
 
 class CompassUI(QWidget):
     def __init__(self):
@@ -269,7 +268,7 @@ class CompassUI(QWidget):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
 
-        # 设置一个定时器，在 30 秒后自动停止
+        # 设置一个定时器，在 60 秒后自动停止
         self.cleanup_timer = QTimer(self)
         self.cleanup_timer.setSingleShot(True)
         self.cleanup_timer.timeout.connect(self.stop_plotting)
@@ -299,7 +298,6 @@ class CompassUI(QWidget):
         self.stop_button.setEnabled(False)
         self.start_button.setEnabled(True)
         print("[INFO] Buttons updated: Stop disabled, Start enabled after timer.")
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
