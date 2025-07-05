@@ -179,8 +179,9 @@ class CompassApp:
 
             # 绘制椭圆中心
             self.ax2.plot(self.center_x, self.center_y, 'ro')
-            self.ax3.plot(self.center_x, self.center_y, 'ro')
+            self.ax3.plot(0, 0, 'ro')  # 在图三绘制圆心在原点
             self.ax1.plot(self.center_x, self.center_y, 'ro')  # 在图一也绘制圆心
+
 
     def stop_serial(self):
         if self.ser and self.ser.is_open:
